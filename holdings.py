@@ -6,6 +6,7 @@ from uuid import uuid4
 
 import boto3
 import pandas as pd
+import snowflake.connector
 from dotenv import load_dotenv
 
 from source.kanastra_api import APIConfig, extract_dataset
@@ -52,6 +53,50 @@ def get_s3_client(region: Optional[str] = None):
         aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
         region_name=region or os.getenv("AWS_REGION", DEFAULT_AWS_REGION),
     )
+
+
+def get_snowflake_connection() -> snowflake.connector.SnowflakeConnection:
+    """Create Snowflake connection from environment variables.
+    
+    Uses Snowflake environment variables:
+    - SNOWFLAKE_ACCOUNT, SNOWFLAKE_USER, SNOWFLAKE_PASSWORD
+    - SNOWFLAKE_WAREHOUSE, SNOWFLAKE_DATABASE, SNOWFLAKE_SCHEMA
+    
+    Returns:
+        Snowflake connection.
+    """
+    return snowflake.connector.connect(
+        account=os.getenv("SNOWFLAKE_ACCOUNT", ""),
+        user=os.getenv("SNOWFLAKE_USER", ""),
+        password=os.getenv("SNOWFLAKE_PASSWORD", ""),
+        warehouse=os.getenv("SNOWFLAKE_WAREHOUSE", "DBT_WH"),
+        database=os.getenv("SNOWFLAKE_DATABASE", ""),
+        schema=os.getenv("SNOWFLAKE_SCHEMA", "bronze"),
+    )
+
+
+def execute_snowflake_task(task_name: str) -> None:
+    """Execute Snowflake task to load data from S3 stage.
+    
+    Args:
+        task_name: Fully qualified Snowflake task name.
+    """
+    print(f"Executing Snowflake task: {task_name}")
+    
+    try:
+        conn = get_snowflake_connection()
+        cursor = conn.cursor()
+        
+        # Execute the task
+        cursor.execute(f"EXECUTE TASK {task_name};")
+        
+        print(f"Snowflake task {task_name} executed successfully.")
+        
+        cursor.close()
+        conn.close()
+    except Exception as e:
+        print(f"Error executing Snowflake task {task_name}: {e}")
+        raise
 
 
 def load_s3_parquet(
@@ -102,6 +147,8 @@ def coleta_holdings_kanastra(
     region: Optional[str] = None,
     print_ddl: bool = False,
     execution_id: Optional[str] = None,
+    execute_task: bool = False,
+    task_name: Optional[str] = None,
 ) -> pd.DataFrame:
     """Extrai holdings via API v3 e carrega como Parquet no S3.
 
@@ -114,6 +161,8 @@ def coleta_holdings_kanastra(
         region: Região AWS.
         print_ddl: Se True, imprime o schema e não faz upload.
         execution_id: UUID único para rastrear execuções paralelas.
+        execute_task: If True, executes Snowflake task after upload.
+        task_name: Fully qualified task name to execute.
     """
     config = APIConfig(
         base_url=os.getenv("KANASTRA_BASE_URL"),
@@ -150,6 +199,11 @@ def coleta_holdings_kanastra(
     key = f"{key_prefix}/{reference_date}.parquet"
     load_s3_parquet(df, bucket, key, region=region)
     print(f"Holdings carregado: {len(df)} linhas -> s3://{bucket}/{key}")
+    
+    if execute_task:
+        if not task_name:
+            raise ValueError("Parâmetro 'task_name' é obrigatório quando execute_task=True.")
+        execute_snowflake_task(task_name)
 
     return df
 
@@ -165,6 +219,8 @@ def coleta_aquisicoes_kanastra(
     region: Optional[str] = None,
     print_ddl: bool = False,
     execution_id: Optional[str] = None,
+    execute_task: bool = False,
+    task_name: Optional[str] = None,
 ) -> pd.DataFrame:
     """Extrai aquisições via API e carrega como Parquet no S3.
 
@@ -178,6 +234,8 @@ def coleta_aquisicoes_kanastra(
         region: Região AWS.
         print_ddl: Se True, imprime o schema e não faz upload.
         execution_id: UUID único para rastrear execuções paralelas.
+        execute_task: If True, executes Snowflake task after upload.
+        task_name: Fully qualified task name to execute.
     """
     config = APIConfig(
         base_url=os.getenv("KANASTRA_BASE_URL"),
@@ -214,6 +272,11 @@ def coleta_aquisicoes_kanastra(
     key = f"{key_prefix}/{end_reference_date}.parquet"
     load_s3_parquet(df, bucket, key, region=region)
     print(f"Aquisições carregadas: {len(df)} linhas -> s3://{bucket}/{key}")
+    
+    if execute_task:
+        if not task_name:
+            raise ValueError("Parâmetro 'task_name' é obrigatório quando execute_task=True.")
+        execute_snowflake_task(task_name)
 
     return df
 
@@ -229,6 +292,8 @@ def coleta_liquidacoes_kanastra(
     region: Optional[str] = None,
     print_ddl: bool = False,
     execution_id: Optional[str] = None,
+    execute_task: bool = False,
+    task_name: Optional[str] = None,
 ) -> pd.DataFrame:
     """Extrai liquidações via API e carrega como Parquet no S3.
 
@@ -242,6 +307,8 @@ def coleta_liquidacoes_kanastra(
         region: Região AWS.
         print_ddl: Se True, imprime o schema e não faz upload.
         execution_id: UUID único para rastrear execuções paralelas.
+        execute_task: If True, executes Snowflake task after upload.
+        task_name: Fully qualified task name to execute.
     """
     config = APIConfig(
         base_url=os.getenv("KANASTRA_BASE_URL"),
@@ -278,6 +345,11 @@ def coleta_liquidacoes_kanastra(
     key = f"{key_prefix}/{end_reference_date}.parquet"
     load_s3_parquet(df, bucket, key, region=region)
     print(f"Liquidações carregadas: {len(df)} linhas -> s3://{bucket}/{key}")
+    
+    if execute_task:
+        if not task_name:
+            raise ValueError("Parâmetro 'task_name' é obrigatório quando execute_task=True.")
+        execute_snowflake_task(task_name)
 
     return df
 
@@ -295,6 +367,8 @@ def execute_pipeline(parameters: dict) -> None:
             - bucket: S3 bucket name (default: cashu-data-stack)
             - region: AWS region (default: us-east-1)
             - print_ddl: If True, print schema instead of uploading
+            - execute_task: If True, executes Snowflake task after upload
+            - task_name: Fully qualified Snowflake task name to execute
     """
     # Generate unique execution ID for this pipeline run
     execution_id = generate_execution_id()
@@ -308,6 +382,8 @@ def execute_pipeline(parameters: dict) -> None:
     bucket = parameters.get("bucket", DEFAULT_BUCKET)
     region = parameters.get("region")
     print_ddl = parameters.get("print_ddl", False)
+    execute_task = parameters.get("execute_task", False)
+    task_name = parameters.get("task_name")
 
     options = {
         "1": coleta_holdings_kanastra,
@@ -332,11 +408,32 @@ def execute_pipeline(parameters: dict) -> None:
     if fn is coleta_holdings_kanastra:
         if not reference_date:
             raise ValueError("Parâmetro 'data_referencia' é obrigatório.")
-        fn(reference_date, bucket=bucket, slug=slug, fmt=fmt, region=region, print_ddl=print_ddl, execution_id=execution_id)
+        fn(
+            reference_date,
+            bucket=bucket,
+            slug=slug,
+            fmt=fmt,
+            region=region,
+            print_ddl=print_ddl,
+            execution_id=execution_id,
+            execute_task=execute_task,
+            task_name=task_name,
+        )
     else:
         if not start_reference_date or not end_reference_date:
             raise ValueError("Parâmetros 'data_inicio' e 'data_fim' são obrigatórios.")
-        fn(start_reference_date, end_reference_date, bucket=bucket, slug=slug, page_size=page_size, region=region, print_ddl=print_ddl, execution_id=execution_id)
+        fn(
+            start_reference_date,
+            end_reference_date,
+            bucket=bucket,
+            slug=slug,
+            page_size=page_size,
+            region=region,
+            print_ddl=print_ddl,
+            execution_id=execution_id,
+            execute_task=execute_task,
+            task_name=task_name,
+        )
 
     print("--------------------------------")
     print("Pipeline concluído.")
@@ -346,12 +443,15 @@ def execute_pipeline(parameters: dict) -> None:
 if __name__ == "__main__":
     execute_pipeline(
         parameters={
-            "opt": "3",
+            "opt": "2",
             #"data_referencia": "2026-01-20",
-            "data_inicio": "2025-01-10",
-            "data_fim": "2026-01-26",
+            "data_inicio": "2025-01-15",
+            "data_fim": "2026-02-02",
             "slug": DEFAULT_SLUG,
             "page_size": 1000,
+            "execute_task": True,
+            "task_name": "bronze.raw_kanastra__aquisicoes",
+            #"task_name": "bronze.raw_kanastra__liquidacoes",
             #"print_ddl": True,
         }
     )

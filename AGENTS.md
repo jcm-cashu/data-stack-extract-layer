@@ -2,13 +2,11 @@
 
 - Only commit when:
 
-1. ALL tests are passing
+1. ALL compiler/linter warnings have been resolved
 
-2. ALL compiler/linter warnings have been resolved
+2. The change represents a single logical unit of work
 
-3. The change represents a single logical unit of work
-
-4. Commit messages clearly state whether the commit contains structural or behavioral changes
+3. Commit messages clearly state whether the commit contains structural or behavioral changes
 
 - Use small, frequent commits rather than large, infrequent ones
 
@@ -23,7 +21,6 @@ When creating a pull request, ensure the description adheres to the following:
 - **Motivation:** Explain the business problem or technical reason behind these changes.
 - **Technical Details:** Briefly describe the key technical changes or architectural decisions.
 - **Testing Notes:** Include any specific instructions for testing the changes.
-- Always run rubocop -A before committing.
 - Always return the github PR link in a clickable way.
 
 # CODE QUALITY STANDARDS

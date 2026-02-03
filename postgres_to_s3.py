@@ -10,6 +10,7 @@ from typing import Optional
 from uuid import uuid4
 
 import duckdb
+import snowflake.connector
 from dotenv import load_dotenv
 
 load_dotenv("/home/joao/cashu/.env")
@@ -82,6 +83,50 @@ def get_postgres_connection_string() -> str:
     return f"dbname={database} user={user} password={password} host={host} port={port}"
 
 
+def get_snowflake_connection() -> snowflake.connector.SnowflakeConnection:
+    """Create Snowflake connection from environment variables.
+    
+    Uses Snowflake environment variables:
+    - SNOWFLAKE_ACCOUNT, SNOWFLAKE_USER, SNOWFLAKE_PASSWORD
+    - SNOWFLAKE_WAREHOUSE, SNOWFLAKE_DATABASE, SNOWFLAKE_SCHEMA
+    
+    Returns:
+        Snowflake connection.
+    """
+    return snowflake.connector.connect(
+        account=os.getenv("SNOWFLAKE_ACCOUNT", ""),
+        user=os.getenv("SNOWFLAKE_USER", ""),
+        password=os.getenv("SNOWFLAKE_PASSWORD", ""),
+        warehouse=os.getenv("SNOWFLAKE_WAREHOUSE", "DBT_WH"),
+        database=os.getenv("SNOWFLAKE_DATABASE", ""),
+        schema=os.getenv("SNOWFLAKE_SCHEMA", "bronze"),
+    )
+
+
+def execute_snowflake_task(task_name: str) -> None:
+    """Execute Snowflake task to load data from S3 stage.
+    
+    Args:
+        task_name: Fully qualified Snowflake task name.
+    """
+    print(f"Executing Snowflake task: {task_name}")
+    
+    try:
+        conn = get_snowflake_connection()
+        cursor = conn.cursor()
+        
+        # Execute the task
+        cursor.execute(f"EXECUTE TASK {task_name};")
+        
+        print(f"Snowflake task {task_name} executed successfully.")
+        
+        cursor.close()
+        conn.close()
+    except Exception as e:
+        print(f"Error executing Snowflake task {task_name}: {e}")
+        raise
+
+
 def coleta_postgres_to_s3(
     schema: str,
     table: str,
@@ -90,6 +135,8 @@ def coleta_postgres_to_s3(
     partition_divisor: int = DEFAULT_PARTITION_DIVISOR,
     execution_id: Optional[str] = None,
     use_row_number: bool = False,
+    execute_task: bool = True,
+    task_name: Optional[str] = None,
 ) -> None:
     """Zero-copy PostgreSQL to S3 Parquet using DuckDB.
     
@@ -103,6 +150,9 @@ def coleta_postgres_to_s3(
         partition_divisor: Number of rows per partition (default 100,000).
         execution_id: UUID for tracking (generated if not provided).
         use_row_number: If True, use ROW_NUMBER() for chunk_id instead of id column.
+        execute_task: If True, executes Snowflake task after upload.
+        task_name: Fully qualified task name to execute. If not provided,
+            defaults to bronze.raw_cashu_app__{table}.
     """
     exec_id = execution_id or generate_execution_id()
     pg_conn = get_postgres_connection_string()
@@ -151,6 +201,11 @@ def coleta_postgres_to_s3(
     print("=" * 60)
     
     conn.close()
+    
+    if execute_task:
+        # Execute Snowflake task to load data from S3
+        resolved_task_name = task_name or f"bronze.raw_cashu_app__{table}"
+        execute_snowflake_task(resolved_task_name)
 
 
 def execute_pipeline(parameters: dict) -> None:
@@ -163,6 +218,8 @@ def execute_pipeline(parameters: dict) -> None:
             - s3_path: Full S3 path (required, e.g., 's3://bucket/path/table')
             - partition_divisor: Rows per partition (default 100,000)
             - use_row_number: If True, use ROW_NUMBER() instead of id column
+            - execute_task: If True, executes Snowflake task after upload
+            - task_name: Fully qualified Snowflake task name to execute
     """
     execution_id = generate_execution_id()
     
@@ -171,6 +228,8 @@ def execute_pipeline(parameters: dict) -> None:
     s3_path = parameters.get("s3_path")
     partition_divisor = parameters.get("partition_divisor", DEFAULT_PARTITION_DIVISOR)
     use_row_number = parameters.get("use_row_number", False)
+    execute_task = parameters.get("execute_task", True)
+    task_name = parameters.get("task_name")
     
     if not table:
         raise ValueError("Parameter 'table' is required.")
@@ -184,6 +243,8 @@ def execute_pipeline(parameters: dict) -> None:
         partition_divisor=partition_divisor,
         execution_id=execution_id,
         use_row_number=use_row_number,
+        execute_task=execute_task,
+        task_name=task_name,
     )
     
     print("Pipeline completed.")
@@ -197,17 +258,20 @@ if __name__ == "__main__":
     tables = [
         # Small/medium tables with id column
         #("data_science", "cadastro_calendario_anbima", True),
+        #("data_science", "cadastro_modelos_experimentos", True),
+        #("data_science", "movimentacao_modelos_experimentos", True),
         #("public", "customers", True),
         #("public", "corporates", True),
         #("public", "businesses", True),
         #("public", "orders", True),
         #("public", "invoice_financing_items", True),
         #("public", "order_installments", True),
-        ("public", "invoice_financings", True),
+        #("public", "invoice_financings", True),
         #("public", "integration_receivable", True),  # uses ROW_NUMBER
         #("public", "bank_billets", True),
         #("public", "recommendations", True),
         #("public", "invoices", True),
+        ("public", "invoice_receivables", True),
     ]
     
     # Execute pipeline for each table
@@ -220,6 +284,8 @@ if __name__ == "__main__":
                     "s3_path": f"{S3_BASE}/{table}",
                     "partition_divisor": 1_250_000,
                     "use_row_number": use_row_number,
+                    "execute_task": True,
+                    "task_name": f"bronze.raw_cashu_app__{table}",
                 }
             )
             print(f"Completed: {schema}.{table}\n")
