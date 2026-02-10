@@ -443,10 +443,10 @@ def execute_pipeline(parameters: dict) -> None:
 if __name__ == "__main__":
     execute_pipeline(
         parameters={
-            "opt": "2",
+            "opt": "3",
             #"data_referencia": "2026-01-20",
-            "data_inicio": "2025-01-15",
-            "data_fim": "2026-02-02",
+            "data_inicio": "2025-02-01",
+            "data_fim": "2026-02-09",
             "slug": DEFAULT_SLUG,
             "page_size": 1000,
             "execute_task": True,

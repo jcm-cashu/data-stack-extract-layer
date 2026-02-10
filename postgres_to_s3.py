@@ -258,20 +258,22 @@ if __name__ == "__main__":
     tables = [
         # Small/medium tables with id column
         #("data_science", "cadastro_calendario_anbima", True),
-        #("data_science", "cadastro_modelos_experimentos", True),
-        #("data_science", "movimentacao_modelos_experimentos", True),
-        #("public", "customers", True),
-        #("public", "corporates", True),
-        #("public", "businesses", True),
-        #("public", "orders", True),
-        #("public", "invoice_financing_items", True),
-        #("public", "order_installments", True),
-        #("public", "invoice_financings", True),
-        #("public", "integration_receivable", True),  # uses ROW_NUMBER
-        #("public", "bank_billets", True),
-        #("public", "recommendations", True),
-        #("public", "invoices", True),
+        ("data_science", "cadastro_modelos_experimentos", True),
+        ("data_science", "movimentacao_modelos_experimentos", True),
+        ("public", "cnabs", True),
+        ("public", "cnab_operations", True),
+        ("public", "customers", True),
+        ("public", "corporates", True),
+        ("public", "businesses", True),
+        ("public", "orders", True),
+        ("public", "invoice_financing_items", True),
+        ("public", "order_installments", True),
+        ("public", "invoice_financings", True),
+        ("public", "bank_billets", True),
+        ("public", "invoices", True),
         ("public", "invoice_receivables", True),
+        ("public", "recommendations", True),
+        ("public", "integration_receivable", True),  # uses ROW_NUMBER
     ]
     
     # Execute pipeline for each table
