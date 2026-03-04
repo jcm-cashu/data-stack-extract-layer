@@ -68,7 +68,8 @@ def get_snowflake_connection() -> snowflake.connector.SnowflakeConnection:
     return snowflake.connector.connect(
         account=os.getenv("SNOWFLAKE_ACCOUNT", ""),
         user=os.getenv("SNOWFLAKE_USER", ""),
-        password=os.getenv("SNOWFLAKE_PASSWORD", ""),
+        #password=os.getenv("SNOWFLAKE_PASSWORD", ""),
+        private_key_file=os.getenv("SNOWFLAKE_PRIVATE_KEY_FILE", ""),
         warehouse=os.getenv("SNOWFLAKE_WAREHOUSE", "DBT_WH"),
         database=os.getenv("SNOWFLAKE_DATABASE", ""),
         schema=os.getenv("SNOWFLAKE_SCHEMA", "bronze"),
@@ -443,10 +444,10 @@ def execute_pipeline(parameters: dict) -> None:
 if __name__ == "__main__":
     execute_pipeline(
         parameters={
-            "opt": "3",
+            "opt": "2",
             #"data_referencia": "2026-01-20",
-            "data_inicio": "2025-02-01",
-            "data_fim": "2026-02-09",
+            "data_inicio": "2025-11-01",
+            "data_fim": "2026-03-03",
             "slug": DEFAULT_SLUG,
             "page_size": 1000,
             "execute_task": True,

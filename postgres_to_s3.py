@@ -1,7 +1,8 @@
 """
-Simple EL (Extract-Load) pipeline: PostgreSQL -> Parquet on S3.
+Simple EL (Extract-Load) pipeline: PostgreSQL -> Parquet/JSON on S3.
 
 Zero-copy extraction using DuckDB's postgres_scanner and direct S3 write.
+Supports Parquet (default) and JSON (NDJSON) for tables with JSONB columns.
 """
 
 import os
@@ -96,7 +97,8 @@ def get_snowflake_connection() -> snowflake.connector.SnowflakeConnection:
     return snowflake.connector.connect(
         account=os.getenv("SNOWFLAKE_ACCOUNT", ""),
         user=os.getenv("SNOWFLAKE_USER", ""),
-        password=os.getenv("SNOWFLAKE_PASSWORD", ""),
+        #password=os.getenv("SNOWFLAKE_PASSWORD", ""),
+        private_key_file=os.getenv("SNOWFLAKE_PRIVATE_KEY_FILE", ""),
         warehouse=os.getenv("SNOWFLAKE_WAREHOUSE", "DBT_WH"),
         database=os.getenv("SNOWFLAKE_DATABASE", ""),
         schema=os.getenv("SNOWFLAKE_SCHEMA", "bronze"),
@@ -137,11 +139,12 @@ def coleta_postgres_to_s3(
     use_row_number: bool = False,
     execute_task: bool = True,
     task_name: Optional[str] = None,
+    output_format: str = "parquet",
 ) -> None:
-    """Zero-copy PostgreSQL to S3 Parquet using DuckDB.
+    """Zero-copy PostgreSQL to S3 using DuckDB.
     
-    Extracts data directly from PostgreSQL and writes partitioned Parquet
-    files to S3 without loading data into Python memory.
+    Extracts data directly from PostgreSQL and writes partitioned files
+    to S3 without loading data into Python memory.
     
     Args:
         schema: PostgreSQL schema name (e.g., 'public').
@@ -153,6 +156,7 @@ def coleta_postgres_to_s3(
         execute_task: If True, executes Snowflake task after upload.
         task_name: Fully qualified task name to execute. If not provided,
             defaults to bronze.raw_cashu_app__{table}.
+        output_format: 'parquet' (default) or 'json' (NDJSON, for tables with JSONB columns).
     """
     exec_id = execution_id or generate_execution_id()
     pg_conn = get_postgres_connection_string()
@@ -163,38 +167,61 @@ def coleta_postgres_to_s3(
     print(f"Execution ID: {exec_id}")
     print(f"Source: {source_table}")
     print(f"Destination: {s3_path}")
+    print(f"Format: {output_format.upper()}")
     print(f"Partition size: {partition_divisor:,} rows")
     print("=" * 60)
     
     conn = get_duckdb_connection()
     
-    # Build chunk_id expression based on whether table has id column
     if use_row_number:
         chunk_expr = f"(ROW_NUMBER() OVER () / {partition_divisor})::int"
     else:
         chunk_expr = f"(id / {partition_divisor})::int"
     
-    # Execute zero-copy transfer with metadata columns
-    query = f"""
-        COPY (
+    print("Executing zero-copy transfer...")
+    start_time = datetime.now()
+    
+    if output_format == "json":
+        conn.execute(f"""
+            CREATE TEMP TABLE _export AS
             SELECT
-                {chunk_expr} AS chunk_id,
+                {chunk_expr} AS _chunk_id,
                 '{exec_id}' AS _execution_id,
                 '{source_table}' AS _source_table,
                 current_timestamp AS _loaded_at,
                 *
-            FROM postgres_scan(
-                '{pg_conn}',
-                '{schema}',
-                '{table}'
-            )
-        ) TO '{s3_path}' (FORMAT PARQUET, PARTITION_BY (chunk_id), OVERWRITE_OR_IGNORE);
-    """
-    
-    print("Executing zero-copy transfer...")
-    start_time = datetime.now()
-    
-    conn.execute(query)
+            FROM postgres_scan('{pg_conn}', '{schema}', '{table}')
+        """)
+        
+        chunks = conn.execute(
+            "SELECT DISTINCT _chunk_id FROM _export ORDER BY _chunk_id"
+        ).fetchall()
+        
+        print(f"Writing {len(chunks)} JSON chunk(s)...")
+        for (chunk_id,) in chunks:
+            dest = f"{s3_path}/chunk_{chunk_id}.json"
+            conn.execute(f"""
+                COPY (
+                    SELECT * EXCLUDE (_chunk_id) FROM _export
+                    WHERE _chunk_id = {chunk_id}
+                ) TO '{dest}' (FORMAT JSON);
+            """)
+            print(f"  chunk {chunk_id} -> {dest}")
+        
+        conn.execute("DROP TABLE _export")
+    else:
+        query = f"""
+            COPY (
+                SELECT
+                    {chunk_expr} AS chunk_id,
+                    '{exec_id}' AS _execution_id,
+                    '{source_table}' AS _source_table,
+                    current_timestamp AS _loaded_at,
+                    *
+                FROM postgres_scan('{pg_conn}', '{schema}', '{table}')
+            ) TO '{s3_path}' (FORMAT PARQUET, PARTITION_BY (chunk_id), OVERWRITE_OR_IGNORE);
+        """
+        conn.execute(query)
     
     elapsed = datetime.now() - start_time
     print(f"Transfer completed in {elapsed.total_seconds():.2f} seconds")
@@ -203,7 +230,6 @@ def coleta_postgres_to_s3(
     conn.close()
     
     if execute_task:
-        # Execute Snowflake task to load data from S3
         resolved_task_name = task_name or f"bronze.raw_cashu_app__{table}"
         execute_snowflake_task(resolved_task_name)
 
@@ -220,6 +246,7 @@ def execute_pipeline(parameters: dict) -> None:
             - use_row_number: If True, use ROW_NUMBER() instead of id column
             - execute_task: If True, executes Snowflake task after upload
             - task_name: Fully qualified Snowflake task name to execute
+            - output_format: 'parquet' (default) or 'json'
     """
     execution_id = generate_execution_id()
     
@@ -230,6 +257,7 @@ def execute_pipeline(parameters: dict) -> None:
     use_row_number = parameters.get("use_row_number", False)
     execute_task = parameters.get("execute_task", True)
     task_name = parameters.get("task_name")
+    output_format = parameters.get("output_format", "parquet")
     
     if not table:
         raise ValueError("Parameter 'table' is required.")
@@ -245,49 +273,49 @@ def execute_pipeline(parameters: dict) -> None:
         use_row_number=use_row_number,
         execute_task=execute_task,
         task_name=task_name,
+        output_format=output_format,
     )
     
     print("Pipeline completed.")
 
 
 if __name__ == "__main__":
-    # S3 bucket base path
     S3_BASE = "s3://cashu-data-stack/el/cashu_postgres"
     
-    # Tables to extract (schema, table, use_row_number)
+    # (schema, table, use_row_number, output_format)
     tables = [
-        # Small/medium tables with id column
-        #("data_science", "cadastro_calendario_anbima", True),
-        ("data_science", "cadastro_modelos_experimentos", True),
-        ("data_science", "movimentacao_modelos_experimentos", True),
-        ("public", "cnabs", True),
-        ("public", "cnab_operations", True),
-        ("public", "customers", True),
-        ("public", "corporates", True),
-        ("public", "businesses", True),
-        ("public", "orders", True),
-        ("public", "invoice_financing_items", True),
-        ("public", "order_installments", True),
-        ("public", "invoice_financings", True),
-        ("public", "bank_billets", True),
-        ("public", "invoices", True),
-        ("public", "invoice_receivables", True),
-        ("public", "recommendations", True),
-        ("public", "integration_receivable", True),  # uses ROW_NUMBER
+        #("data_science", "cadastro_calendario_anbima", True, "parquet", 1_250_000),
+        #("data_science", "cadastro_modelos_experimentos", True, "parquet", 1_250_000),
+        #("data_science", "movimentacao_modelos_experimentos", True, "parquet", 1_250_000),
+        #("public", "cnabs", True, "parquet", 1_250_000),
+        #("public", "cnab_operations", True, "parquet", 1_250_000),
+        #("public", "customers", True, "parquet", 1_250_000),
+        #("public", "corporates", True, "parquet", 1_250_000),
+        #("public", "businesses", True, "parquet", 1_250_000),
+        #("public", "orders", True, "parquet", 1_250_000),
+        #("public", "invoice_financing_items", True, "parquet", 1_250_000),
+        #("public", "order_installments", True, "parquet",1_250_000),
+        #("public", "invoice_financings", True, "parquet", 1_250_000),
+        #("public", "bank_billets", True, "parquet", 1_250_000),
+        #("public", "invoices", True, "parquet", 1_250_000),
+        #("public", "invoice_receivables", True, "parquet", 1_250_000),
+        #("public", "recommendations", True, "parquet", 1_250_000),
+        ("public", "integration_receivable", True, "parquet", 1_250_000),
+        #("public", "core_data_scrs", True, "json", 25_000),
     ]
     
-    # Execute pipeline for each table
-    for schema, table, use_row_number in tables:
+    for schema, table, use_row_number, output_format, partition_divisor in tables:
         try:
             execute_pipeline(
                 parameters={
                     "schema": schema,
                     "table": table,
                     "s3_path": f"{S3_BASE}/{table}",
-                    "partition_divisor": 1_250_000,
+                    "partition_divisor": partition_divisor,
                     "use_row_number": use_row_number,
-                    "execute_task": True,
+                    "execute_task": False,
                     "task_name": f"bronze.raw_cashu_app__{table}",
+                    "output_format": output_format,
                 }
             )
             print(f"Completed: {schema}.{table}\n")
