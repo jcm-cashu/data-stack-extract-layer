@@ -6,7 +6,6 @@ CSV with comma separator, and optionally executes a Snowflake task after the upl
 """
 
 import os
-import argparse
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -16,7 +15,8 @@ import duckdb
 import snowflake.connector
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv("/Users/joaomagalhaes/cashu/.env")
+#load_dotenv()
 
 # ---------------------------------------------------------------------------
 # Defaults
@@ -71,6 +71,7 @@ def get_duckdb_connection() -> duckdb.DuckDBPyConnection:
     return conn
 
 
+print(os.getenv("SNOWFLAKE_PRIVATE_KEY_FILE"))
 def get_snowflake_connection() -> snowflake.connector.SnowflakeConnection:
     """Create Snowflake connection from environment variables."""
     return snowflake.connector.connect(
@@ -282,51 +283,19 @@ def execute_pipeline(parameters: dict) -> None:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="CSV -> S3 (normalized CSV) via DuckDB.")
-    parser.add_argument("--source-folder", required=True, help="Local folder containing the CSV file.")
-    parser.add_argument("--file-name", required=True, help="CSV filename inside source folder.")
-    parser.add_argument("--s3-path", required=True, help="Destination S3 path, e.g. s3://bucket/path/file.csv")
-    parser.add_argument("--delimiter", default=";", help="Input CSV delimiter (default: ';').")
-    parser.add_argument("--encoding", default="utf-8", help="Input CSV encoding (default: utf-8).")
-    parser.add_argument(
-        "--no-header",
-        action="store_true",
-        help="Set when input CSV does not have a header row.",
-    )
-    parser.add_argument(
-        "--ignore-errors",
-        action="store_true",
-        help="Ignore CSV parsing errors (DuckDB read_csv_auto ignore_errors=true).",
-    )
-    parser.add_argument(
-        "--print-ddl",
-        action="store_true",
-        help="Print inferred DuckDB DDL before uploading.",
-    )
-    parser.add_argument(
-        "--execute-task",
-        action="store_true",
-        help="Execute a Snowflake task after upload.",
-    )
-    parser.add_argument(
-        "--task-name",
-        default=None,
-        help="Snowflake task name (required if --execute-task).",
-    )
-
-    args = parser.parse_args()
-
+    file_name = "estoque_20260304.csv"
+    source_folder = f"/Users/joaomagalhaes/Downloads"
     execute_pipeline(
         parameters={
-            "source_folder": args.source_folder,
-            "file_name": args.file_name,
-            "s3_path": args.s3_path,
-            "delimiter": args.delimiter,
-            "header": not args.no_header,
-            "encoding": args.encoding,
-            "ignore_errors": args.ignore_errors,
-            "print_ddl": args.print_ddl,
-            "execute_task": args.execute_task,
-            "task_name": args.task_name,
+            "source_folder": source_folder,
+            "file_name": file_name,
+            "s3_path": f"s3://cashu-data-stack/el/fromtis/estoque/{file_name}",
+            "delimiter": ";",
+            "header": True,
+            "encoding": "latin-1",
+            "ignore_errors": False,
+            "print_ddl": False,
+            "execute_task": True,
+            "task_name": "bronze.raw_fromtis__estoque",
         }
     )
