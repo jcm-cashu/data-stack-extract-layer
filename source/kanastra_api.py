@@ -247,6 +247,31 @@ def fetch_investor_positions(
         )
 
 
+def fetch_repurchases(
+    config: APIConfig,
+    *,
+    start_reference_date: str,
+    end_reference_date: str,
+    slug: str,
+    page_size: int = 500,
+) -> Iterable[Mapping[str, object]]:
+    with _build_session(config) as session:
+        params = {
+            "start_reference_date": start_reference_date,
+            "end_reference_date": end_reference_date,
+            "slug": slug,
+        }
+        return list(
+            _stream_paginated(
+                session,
+                config,
+                "/repurchases",
+                base_params=params,
+                page_size=page_size,
+            )
+        )
+
+
 def fetch_indexes(config: APIConfig) -> Iterable[Mapping[str, object]]:
     with _build_session(config) as session:
         payload = _request_json(session, config, "/indexes")
@@ -385,6 +410,7 @@ def extract_dataset(
         "acquisitions": fetch_acquisitions,
         "classes": fetch_classes,
         "liquidations": fetch_liquidations,
+        "repurchases": fetch_repurchases,
         "investor_positions": fetch_investor_positions,
         "indexes": fetch_indexes,
         "holdings_v3": fetch_holdings_v3,

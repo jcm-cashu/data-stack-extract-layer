@@ -16,6 +16,7 @@ DEFAULT_BUCKET = "cashu-data-stack"
 DEFAULT_HOLDINGS_KEY = "el/kanastra/estoque"
 DEFAULT_ACQUISITIONS_KEY = "el/kanastra/aquisicoes"
 DEFAULT_LIQUIDATIONS_KEY = "el/kanastra/liquidacoes"
+DEFAULT_REPURCHASES_KEY = "el/kanastra/repurchases"
 DEFAULT_SLUG = "fidc-inova-credtech-iii"
 DEFAULT_AWS_REGION = "us-east-1"
 DEFAULT_COMPRESSION = "snappy"
@@ -355,12 +356,83 @@ def coleta_liquidacoes_kanastra(
     return df
 
 
+def coleta_recompras_kanastra(
+    start_reference_date: str,
+    end_reference_date: str,
+    *,
+    bucket: str = DEFAULT_BUCKET,
+    key_prefix: str = DEFAULT_REPURCHASES_KEY,
+    slug: Optional[str] = None,
+    page_size: int = 500,
+    region: Optional[str] = None,
+    print_ddl: bool = False,
+    execution_id: Optional[str] = None,
+    execute_task: bool = False,
+    task_name: Optional[str] = None,
+) -> pd.DataFrame:
+    """Extrai recompras via API e carrega como Parquet no S3.
+
+    Args:
+        start_reference_date: Data inicial (YYYY-MM-DD).
+        end_reference_date: Data final (YYYY-MM-DD).
+        bucket: Nome do bucket S3.
+        key_prefix: Prefixo do caminho no S3.
+        slug: Slug da operação.
+        page_size: Tamanho da página para paginação da API.
+        region: Região AWS.
+        print_ddl: Se True, imprime o schema e não faz upload.
+        execution_id: UUID único para rastrear execuções paralelas.
+        execute_task: If True, executes Snowflake task after upload.
+        task_name: Fully qualified task name to execute.
+    """
+    config = APIConfig(
+        base_url=os.getenv("KANASTRA_BASE_URL"),
+        client_id=os.getenv("KANASTRA_CLIENT_ID"),
+        client_secret=os.getenv("KANASTRA_CLIENT_SECRET"),
+    )
+
+    effective_slug = slug or DEFAULT_SLUG
+    payload = extract_dataset(
+        "repurchases",
+        config=config,
+        start_reference_date=start_reference_date,
+        end_reference_date=end_reference_date,
+        slug=effective_slug,
+        page_size=page_size,
+    )
+
+    df = payload if isinstance(payload, pd.DataFrame) else pd.DataFrame(payload)
+    if df.empty:
+        print(f"Nenhuma recompra retornada para {start_reference_date} a {end_reference_date} (slug {effective_slug}).")
+        return df
+
+    df["_execution_id"] = execution_id or generate_execution_id()
+    df["_slug"] = effective_slug
+    df["_loaded_at"] = datetime.now().isoformat()
+
+    if print_ddl:
+        key = f"{key_prefix}/{end_reference_date}.parquet"
+        print_schema_from_df(df, f"s3://{bucket}/{key}")
+        return df
+
+    key = f"{key_prefix}/{end_reference_date}.parquet"
+    load_s3_parquet(df, bucket, key, region=region)
+    print(f"Recompras carregadas: {len(df)} linhas -> s3://{bucket}/{key}")
+
+    if execute_task:
+        if not task_name:
+            raise ValueError("Parâmetro 'task_name' é obrigatório quando execute_task=True.")
+        execute_snowflake_task(task_name)
+
+    return df
+
+
 def execute_pipeline(parameters: dict) -> None:
     """Execute extract and load pipeline to S3.
 
     Args:
         parameters: Dict with keys:
-            - opt: "1" (holdings), "2" (aquisicoes), "3" (liquidacoes)
+            - opt: "1" (holdings), "2" (aquisicoes), "3" (liquidacoes), "4" (recompras)
             - data_referencia: Required for holdings (YYYY-MM-DD)
             - data_inicio/data_fim: Required for aquisicoes/liquidacoes
             - slug: Optional operation slug
@@ -390,11 +462,12 @@ def execute_pipeline(parameters: dict) -> None:
         "1": coleta_holdings_kanastra,
         "2": coleta_aquisicoes_kanastra,
         "3": coleta_liquidacoes_kanastra,
+        "4": coleta_recompras_kanastra,
     }
 
     opt = parameters.get("opt", "1")
     if opt not in options:
-        raise ValueError(f"Opção inválida: {opt}. Use 1=holdings, 2=aquisicoes, 3=liquidacoes")
+        raise ValueError(f"Opção inválida: {opt}. Use 1=holdings, 2=aquisicoes, 3=liquidacoes, 4=recompras")
 
     print("--------------------------------")
     print("Pipeline Extract & Load (S3)")
@@ -446,13 +519,14 @@ if __name__ == "__main__":
         parameters={
             "opt": "2",
             #"data_referencia": "2026-01-20",
-            "data_inicio": "2025-11-01",
-            "data_fim": "2026-03-03",
+            "data_inicio": "2026-02-15",
+            "data_fim": "2026-03-09",
             "slug": DEFAULT_SLUG,
             "page_size": 1000,
             "execute_task": True,
             "task_name": "bronze.raw_kanastra__aquisicoes",
             #"task_name": "bronze.raw_kanastra__liquidacoes",
+            #"task_name": "bronze.raw_kanastra__recompras",
             #"print_ddl": True,
         }
     )
